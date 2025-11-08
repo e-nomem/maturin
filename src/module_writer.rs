@@ -82,6 +82,23 @@ pub trait ModuleWriterExt: ModuleWriter {
         Ok(())
     }
 
+    fn add_file_infer_permissions(
+        &mut self,
+        target: impl AsRef<Path>,
+        source: impl AsRef<Path>,
+    ) -> Result<()> {
+        let source = source.as_ref();
+
+        #[cfg(unix)]
+        let mode = source.metadata()?.permissions().mode();
+        #[cfg(not(unix))]
+        let mode = 0o644;
+
+        let executable = (0o100 & mode) == 0o100;
+
+        self.add_file(target, source, executable)
+    }
+
     /// Creates an empty file at the specified target
     fn add_empty_file(&mut self, target: impl AsRef<Path>) -> Result<()> {
         self.add_data(target, None, b"".as_slice(), false)
@@ -542,10 +559,6 @@ where
     fn flush(&mut self) -> io::Result<()> {
         self.inner.flush()
     }
-}
-
-fn permission_is_executable(mode: u32) -> bool {
-    (0o100 & mode) == 0o100
 }
 
 #[cfg(unix)]
@@ -1378,12 +1391,9 @@ pub fn write_python_part(
                         continue;
                     }
                 }
-                #[cfg(unix)]
-                let mode = absolute.metadata()?.permissions().mode();
-                #[cfg(not(unix))]
-                let mode = 0o644;
+
                 writer
-                    .add_file(relative, &absolute, permission_is_executable(mode))
+                    .add_file_infer_permissions(relative, &absolute)
                     .context(format!("File to add file from {}", absolute.display()))?;
             }
         }
@@ -1405,11 +1415,7 @@ pub fn write_python_part(
                 {
                     let target = source.strip_prefix(pyproject_dir)?.to_path_buf();
                     if !source.is_dir() {
-                        #[cfg(unix)]
-                        let mode = source.metadata()?.permissions().mode();
-                        #[cfg(not(unix))]
-                        let mode = 0o644;
-                        writer.add_file(target, source, permission_is_executable(mode))?;
+                        writer.add_file_infer_permissions(target, source)?;
                     }
                 }
             }
@@ -1508,10 +1514,6 @@ pub fn add_data(
                     .build()
                 {
                     let file = file?;
-                    #[cfg(unix)]
-                    let mode = file.metadata()?.permissions().mode();
-                    #[cfg(not(unix))]
-                    let mode = 0o644;
                     let relative = metadata24
                         .get_data_dir()
                         .join(file.path().strip_prefix(data).unwrap());
@@ -1519,14 +1521,9 @@ pub fn add_data(
                     if file.path_is_symlink() {
                         // Copy the actual file contents, not the link, so that you can create a
                         // data directory by joining different data sources
-                        let source = fs::read_link(file.path())?;
-                        writer.add_file(
-                            relative,
-                            source.parent().unwrap(),
-                            permission_is_executable(mode),
-                        )?;
+                        writer.add_file_infer_permissions(relative, file.path())?;
                     } else if file.path().is_file() {
-                        writer.add_file(relative, file.path(), permission_is_executable(mode))?;
+                        writer.add_file_infer_permissions(relative, file.path())?;
                     } else if file.path().is_dir() {
                         // Intentionally ignored
                     } else {
