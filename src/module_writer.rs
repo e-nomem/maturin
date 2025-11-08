@@ -48,6 +48,21 @@ const SDIST_DETERMINISTIC_TIMESTAMP: u64 = 1153704088;
 
 /// Allows writing the module to a wheel or add it directly to the virtualenv
 pub trait ModuleWriter {
+    /// Adds a file with data as content in target relative to the module base path while setting
+    /// the appropriate unix permissions
+    ///
+    /// For generated files, `source` is `None`.
+    fn add_data(
+        &mut self,
+        target: impl AsRef<Path>,
+        source: Option<&Path>,
+        data: impl Read,
+        executable: bool,
+    ) -> Result<()>;
+}
+
+/// Extension trait with convenience methods for interacting with a [ModuleWriter]
+pub trait ModuleWriterExt: ModuleWriter {
     /// Adds a file with bytes as content in target relative to the module base path.
     ///
     /// For generated files, `source` is `None`.
@@ -57,7 +72,6 @@ pub trait ModuleWriter {
         source: Option<&Path>,
         bytes: &[u8],
     ) -> Result<()> {
-        debug!("Adding {}", target.as_ref().display());
         // 0o644 is the default from the zip crate
         self.add_bytes_with_permissions(target, source, bytes, 0o644)
     }
@@ -72,7 +86,10 @@ pub trait ModuleWriter {
         source: Option<&Path>,
         bytes: &[u8],
         permissions: u32,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        debug!("Adding {}", target.as_ref().display());
+        self.add_data(target, source, bytes, permission_is_executable(permissions))
+    }
 
     /// Copies the source file to the target path relative to the module base path
     fn add_file(&mut self, target: impl AsRef<Path>, source: impl AsRef<Path>) -> Result<()> {
@@ -91,15 +108,21 @@ pub trait ModuleWriter {
         let source = source.as_ref();
         debug!("Adding {} from {}", target.display(), source.display());
 
-        let read_failed_context = format!("Failed to read {}", source.display());
-        let mut file = File::open(source).context(read_failed_context.clone())?;
-        let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer).context(read_failed_context)?;
-        self.add_bytes_with_permissions(target, Some(source), &buffer, permissions)
-            .context(format!("Failed to write to {}", target.display()))?;
+        let file =
+            File::open(source).with_context(|| format!("Failed to read {}", source.display()))?;
+        self.add_data(
+            target,
+            Some(source),
+            file,
+            permission_is_executable(permissions),
+        )
+        .with_context(|| format!("Failed to write to {}", target.display()))?;
         Ok(())
     }
 }
+
+/// This blanket impl makes it impossible to overwrite the methods in [ModuleWriterExt]
+impl<T: ModuleWriter> ModuleWriterExt for T {}
 
 /// A [ModuleWriter] that adds the module somewhere in the filesystem, e.g. in a virtualenv
 pub struct PathWriter {
@@ -118,12 +141,12 @@ impl PathWriter {
 }
 
 impl ModuleWriter for PathWriter {
-    fn add_bytes_with_permissions(
+    fn add_data(
         &mut self,
         target: impl AsRef<Path>,
         source: Option<&Path>,
-        bytes: &[u8],
-        #[cfg_attr(target_os = "windows", allow(unused_variables))] permissions: u32,
+        mut data: impl Read,
+        #[cfg_attr(target_os = "windows", allow(unused_variables))] executable: bool,
     ) -> Result<()> {
         let path = self.base_path.join(&target);
 
@@ -145,7 +168,7 @@ impl ModuleWriter for PathWriter {
                     .create(true)
                     .write(true)
                     .truncate(true)
-                    .mode(permissions)
+                    .mode(default_permission(executable))
                     .open(&path)
             }
             #[cfg(target_os = "windows")]
@@ -153,10 +176,10 @@ impl ModuleWriter for PathWriter {
                 File::create(&path)
             }
         }
-        .context(format!("Failed to create a file at {}", path.display()))?;
+        .with_context(|| format!("Failed to create a file at {}", path.display()))?;
 
-        file.write_all(bytes)
-            .context(format!("Failed to write to file at {}", path.display()))?;
+        io::copy(&mut data, &mut file)
+            .with_context(|| format!("Failed to write to file at {}", path.display()))?;
 
         Ok(())
     }
@@ -197,12 +220,12 @@ impl CompressionOptions {
 }
 
 impl ModuleWriter for WheelWriter {
-    fn add_bytes_with_permissions(
+    fn add_data(
         &mut self,
         target: impl AsRef<Path>,
         source: Option<&Path>,
-        bytes: &[u8],
-        permissions: u32,
+        mut data: impl Read,
+        executable: bool,
     ) -> Result<()> {
         let target = target.as_ref();
         if self.exclude(target) {
@@ -220,18 +243,20 @@ impl ModuleWriter for WheelWriter {
         let mut options = self
             .compression
             .get_file_options()
-            .unix_permissions(permissions);
+            .unix_permissions(default_permission(executable));
 
-        let mtime = self.mtime().ok();
-        if let Some(mtime) = mtime {
+        if let Ok(mtime) = self.mtime() {
             options = options.last_modified_time(mtime);
         }
 
         self.zip.start_file(target.clone(), options)?;
-        self.zip.write_all(bytes)?;
+        let mut writer = StreamSha256::new(&mut self.zip);
 
-        let hash = URL_SAFE_NO_PAD.encode(Sha256::digest(bytes));
-        self.record.push((target, hash, bytes.len()));
+        io::copy(&mut data, &mut writer)
+            .with_context(|| format!("Failed to write to zip archive for {target}"))?;
+
+        let (hash, length) = writer.finalize()?;
+        self.record.push((target, hash, length));
 
         Ok(())
     }
@@ -364,12 +389,12 @@ pub struct SDistWriter {
 }
 
 impl ModuleWriter for SDistWriter {
-    fn add_bytes_with_permissions(
+    fn add_data(
         &mut self,
         target: impl AsRef<Path>,
         source: Option<&Path>,
-        bytes: &[u8],
-        permissions: u32,
+        mut data: impl Read,
+        executable: bool,
     ) -> Result<()> {
         if let Some(source) = source {
             if self.exclude(source) {
@@ -387,18 +412,25 @@ impl ModuleWriter for SDistWriter {
             return Ok(());
         }
 
+        let mut buffer = Vec::new();
+        data.read_to_end(&mut buffer)
+            .with_context(|| format!("Failed to read data into buffer for {}", target.display()))?;
+
         let mut header = tar::Header::new_gnu();
-        header.set_size(bytes.len() as u64);
-        header.set_mode(permissions);
+        header.set_size(buffer.len() as u64);
+        header.set_mode(default_permission(executable));
         header.set_mtime(self.mtime);
-        header.set_cksum();
+
         self.tar
-            .append_data(&mut header, target, bytes)
-            .context(format!(
-                "Failed to add {} bytes to sdist as {}",
-                bytes.len(),
-                target.display()
-            ))?;
+            .append_data(&mut header, target, buffer.as_slice())
+            .with_context(|| {
+                format!(
+                    "Failed to add {} bytes to sdist as {}",
+                    buffer.len(),
+                    target.display()
+                )
+            })?;
+
         Ok(())
     }
 }
@@ -502,6 +534,66 @@ impl FileTracker {
             }
         }
     }
+}
+
+struct StreamSha256<'a, W> {
+    hasher: Sha256,
+    inner: &'a mut W,
+    bytes_written: usize,
+}
+
+impl<'a, W> StreamSha256<'a, W>
+where
+    W: Write,
+{
+    fn new(inner: &'a mut W) -> Self {
+        Self {
+            hasher: Sha256::new(),
+            inner,
+            bytes_written: 0,
+        }
+    }
+
+    fn finalize(self) -> Result<(String, usize)> {
+        self.inner.flush()?;
+        let hash = URL_SAFE_NO_PAD.encode(self.hasher.finalize());
+        Ok((hash, self.bytes_written))
+    }
+}
+
+impl<'a, W> Write for StreamSha256<'a, W>
+where
+    W: Write,
+{
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.hasher.update(buf);
+        let written = self.inner.write(buf)?;
+        self.bytes_written += written;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+fn permission_is_executable(mode: u32) -> bool {
+    (0o100 & mode) == 0o100
+}
+
+#[cfg(unix)]
+#[inline]
+fn default_permission(executable: bool) -> u32 {
+    match executable {
+        true => 0o755,
+        false => 0o644,
+    }
+}
+
+#[cfg(not(unix))]
+#[inline]
+fn default_permission(_executable: bool) -> u32 {
+    0o644
 }
 
 fn expand_compressed_tag(tag: &str) -> impl Iterator<Item = String> + '_ {
@@ -1474,6 +1566,7 @@ mod tests {
     use pep440_rs::Version;
 
     use super::*;
+    use crate::compression::CompressionMethod;
 
     #[test]
     // The mechanism is the same for wheel_writer

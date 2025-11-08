@@ -5,16 +5,16 @@ use crate::build_options::CargoOptions;
 use crate::compile::{CompileTarget, warn_missing_py_init};
 use crate::compression::CompressionOptions;
 use crate::module_writer::{
-    WheelWriter, add_data, write_bin, write_bindings_module, write_cffi_module, write_python_part,
-    write_uniffi_module, write_wasm_launcher,
+    ModuleWriterExt, WheelWriter, add_data, write_bin, write_bindings_module, write_cffi_module,
+    write_python_part, write_uniffi_module, write_wasm_launcher,
 };
 use crate::project_layout::ProjectLayout;
 use crate::source_distribution::source_distribution;
 use crate::target::validate_wheel_filename_for_pypi;
 use crate::target::{Arch, Os};
 use crate::{
-    BridgeModel, BuildArtifact, Metadata24, ModuleWriter, PyProjectToml, PythonInterpreter, Target,
-    compile, pyproject_toml::Format,
+    BridgeModel, BuildArtifact, Metadata24, PyProjectToml, PythonInterpreter, Target, compile,
+    pyproject_toml::Format,
 };
 use anyhow::{Context, Result, anyhow, bail};
 use cargo_metadata::CrateType;
