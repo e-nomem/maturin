@@ -63,11 +63,6 @@ pub trait ModuleWriter {
 
 /// Extension trait with convenience methods for interacting with a [ModuleWriter]
 pub trait ModuleWriterExt: ModuleWriter {
-    /// Copies the source file to the target path relative to the module base path
-    fn add_file(&mut self, target: impl AsRef<Path>, source: impl AsRef<Path>) -> Result<()> {
-        self.add_file_with_permissions(target, source, false)
-    }
-
     /// Copies the source file the target path relative to the module base path while setting
     /// the given unix permissions
     fn add_file_with_permissions(
@@ -937,7 +932,7 @@ if hasattr({ext_name}, "__all__"):
         let type_stub = project_layout.rust_module.join(format!("{ext_name}.pyi"));
         if type_stub.exists() {
             eprintln!("📖 Found type stub file at {ext_name}.pyi");
-            writer.add_file(module.join("__init__.pyi"), type_stub)?;
+            writer.add_file_with_permissions(module.join("__init__.pyi"), type_stub, false)?;
             writer.add_empty_file(module.join("py.typed"))?;
         }
         writer.add_file_with_permissions(module.join(so_filename), artifact, true)?;
@@ -1004,7 +999,7 @@ pub fn write_cffi_module(
             .join(format!("{module_name}.pyi"));
         if type_stub.exists() {
             eprintln!("📖 Found type stub file at {module_name}.pyi");
-            writer.add_file(module.join("__init__.pyi"), type_stub)?;
+            writer.add_file_with_permissions(module.join("__init__.pyi"), type_stub, false)?;
             writer.add_empty_file(module.join("py.typed"))?;
         }
     };
@@ -1251,7 +1246,7 @@ pub fn write_uniffi_module(
             .join(format!("{module_name}.pyi"));
         if type_stub.exists() {
             eprintln!("📖 Found type stub file at {module_name}.pyi");
-            writer.add_file(module.join("__init__.pyi"), type_stub)?;
+            writer.add_file_with_permissions(module.join("__init__.pyi"), type_stub, false)?;
             writer.add_empty_file(module.join("py.typed"))?;
         }
     };
@@ -1259,9 +1254,10 @@ pub fn write_uniffi_module(
     if !editable || project_layout.python_module.is_none() {
         writer.add_data(module.join("__init__.py"), None, py_init.as_bytes(), false)?;
         for binding in binding_names.iter() {
-            writer.add_file(
+            writer.add_file_with_permissions(
                 module.join(binding).with_extension("py"),
                 binding_dir.join(binding).with_extension("py"),
+                false,
             )?;
         }
         writer.add_file_with_permissions(module.join(cdylib), artifact, true)?;
@@ -1472,7 +1468,11 @@ pub fn write_dist_info(
     if !metadata24.license_files.is_empty() {
         let license_files_dir = dist_info_dir.join("licenses");
         for path in &metadata24.license_files {
-            writer.add_file(license_files_dir.join(path), pyproject_dir.join(path))?;
+            writer.add_file_with_permissions(
+                license_files_dir.join(path),
+                pyproject_dir.join(path),
+                false,
+            )?;
         }
     }
 
