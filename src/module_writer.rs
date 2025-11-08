@@ -63,19 +63,6 @@ pub trait ModuleWriter {
 
 /// Extension trait with convenience methods for interacting with a [ModuleWriter]
 pub trait ModuleWriterExt: ModuleWriter {
-    /// Adds a file with bytes as content in target relative to the module base path.
-    ///
-    /// For generated files, `source` is `None`.
-    fn add_bytes(
-        &mut self,
-        target: impl AsRef<Path>,
-        source: Option<&Path>,
-        bytes: &[u8],
-    ) -> Result<()> {
-        // 0o644 is the default from the zip crate
-        self.add_bytes_with_permissions(target, source, bytes, 0o644)
-    }
-
     /// Adds a file with bytes as content in target relative to the module base path while setting
     /// the given unix permissions
     ///
@@ -118,6 +105,11 @@ pub trait ModuleWriterExt: ModuleWriter {
         )
         .with_context(|| format!("Failed to write to {}", target.display()))?;
         Ok(())
+    }
+
+    /// Creates an empty file at the specified target
+    fn add_empty_file(&mut self, target: impl AsRef<Path>) -> Result<()> {
+        self.add_data(target, None, b"".as_slice(), false)
     }
 }
 
@@ -320,7 +312,7 @@ impl WheelWriter {
                 let name = metadata24.get_distribution_escaped();
                 let target = format!("{name}.pth");
                 debug!("Adding {} from {}", target, python_path);
-                self.add_bytes(target, None, python_path.as_bytes())?;
+                self.add_data(target, None, python_path.as_bytes(), false)?;
             } else {
                 eprintln!(
                     "⚠️ source code path contains non-Unicode sequences, editable installs may not work."
@@ -949,7 +941,7 @@ pub fn write_bindings_module(
     } else {
         let module = PathBuf::from(ext_name);
         // Reexport the shared library as if it were the top level module
-        writer.add_bytes(
+        writer.add_data(
             module.join("__init__.py"),
             None,
             format!(
@@ -960,12 +952,13 @@ if hasattr({ext_name}, "__all__"):
     __all__ = {ext_name}.__all__"#
             )
             .as_bytes(),
+            false,
         )?;
         let type_stub = project_layout.rust_module.join(format!("{ext_name}.pyi"));
         if type_stub.exists() {
             eprintln!("📖 Found type stub file at {ext_name}.pyi");
             writer.add_file(module.join("__init__.pyi"), type_stub)?;
-            writer.add_bytes(module.join("py.typed"), None, b"")?;
+            writer.add_empty_file(module.join("py.typed"))?;
         }
         writer.add_file_with_permissions(module.join(so_filename), artifact, 0o755)?;
     }
@@ -1032,17 +1025,23 @@ pub fn write_cffi_module(
         if type_stub.exists() {
             eprintln!("📖 Found type stub file at {module_name}.pyi");
             writer.add_file(module.join("__init__.pyi"), type_stub)?;
-            writer.add_bytes(module.join("py.typed"), None, b"")?;
+            writer.add_empty_file(module.join("py.typed"))?;
         }
     };
 
     if !editable || project_layout.python_module.is_none() {
-        writer.add_bytes(
+        writer.add_data(
             module.join("__init__.py"),
             None,
             cffi_init_file(&cffi_module_file_name).as_bytes(),
+            false,
         )?;
-        writer.add_bytes(module.join("ffi.py"), None, cffi_declarations.as_bytes())?;
+        writer.add_data(
+            module.join("ffi.py"),
+            None,
+            cffi_declarations.as_bytes(),
+            false,
+        )?;
         writer.add_file_with_permissions(module.join(&cffi_module_file_name), artifact, 0o755)?;
     }
 
@@ -1273,12 +1272,12 @@ pub fn write_uniffi_module(
         if type_stub.exists() {
             eprintln!("📖 Found type stub file at {module_name}.pyi");
             writer.add_file(module.join("__init__.pyi"), type_stub)?;
-            writer.add_bytes(module.join("py.typed"), None, b"")?;
+            writer.add_empty_file(module.join("py.typed"))?;
         }
     };
 
     if !editable || project_layout.python_module.is_none() {
-        writer.add_bytes(module.join("__init__.py"), None, py_init.as_bytes())?;
+        writer.add_data(module.join("__init__.py"), None, py_init.as_bytes(), false)?;
         for binding in binding_names.iter() {
             writer.add_file(
                 module.join(binding).with_extension("py"),
@@ -1454,16 +1453,18 @@ pub fn write_dist_info(
 ) -> Result<()> {
     let dist_info_dir = metadata24.get_dist_info_dir();
 
-    writer.add_bytes(
+    writer.add_data(
         dist_info_dir.join("METADATA"),
         None,
         metadata24.to_file_contents()?.as_bytes(),
+        false,
     )?;
 
-    writer.add_bytes(
+    writer.add_data(
         dist_info_dir.join("WHEEL"),
         None,
         wheel_file(tags)?.as_bytes(),
+        false,
     )?;
 
     let mut entry_points = String::new();
@@ -1477,10 +1478,11 @@ pub fn write_dist_info(
         entry_points.push_str(&entry_points_txt(entry_type, scripts));
     }
     if !entry_points.is_empty() {
-        writer.add_bytes(
+        writer.add_data(
             dist_info_dir.join("entry_points.txt"),
             None,
             entry_points.as_bytes(),
+            false,
         )?;
     }
 
