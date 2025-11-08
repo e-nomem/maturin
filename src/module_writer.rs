@@ -63,21 +63,6 @@ pub trait ModuleWriter {
 
 /// Extension trait with convenience methods for interacting with a [ModuleWriter]
 pub trait ModuleWriterExt: ModuleWriter {
-    /// Adds a file with bytes as content in target relative to the module base path while setting
-    /// the given unix permissions
-    ///
-    /// For generated files, `source` is `None`.
-    fn add_bytes_with_permissions(
-        &mut self,
-        target: impl AsRef<Path>,
-        source: Option<&Path>,
-        bytes: &[u8],
-        permissions: u32,
-    ) -> Result<()> {
-        debug!("Adding {}", target.as_ref().display());
-        self.add_data(target, source, bytes, permission_is_executable(permissions))
-    }
-
     /// Copies the source file to the target path relative to the module base path
     fn add_file(&mut self, target: impl AsRef<Path>, source: impl AsRef<Path>) -> Result<()> {
         self.add_file_with_permissions(target, source, 0o644)
@@ -1355,11 +1340,10 @@ if __name__ == '__main__':
     "#
     );
 
-    // We can't use add_file since we want to mark the file as executable
     let launcher_path = Path::new(&metadata.get_distribution_escaped())
         .join(bin_name.replace('-', "_"))
         .with_extension("py");
-    writer.add_bytes_with_permissions(&launcher_path, None, entrypoint_script.as_bytes(), 0o755)?;
+    writer.add_data(&launcher_path, None, entrypoint_script.as_bytes(), true)?;
     Ok(())
 }
 
@@ -1574,13 +1558,13 @@ mod tests {
     // The mechanism is the same for wheel_writer
     fn sdist_writer_excludes() -> Result<(), Box<dyn std::error::Error>> {
         let metadata = Metadata24::new("dummy".to_string(), Version::new([1, 0]));
-        let perm = 0o777;
+        let empty = b"".as_slice();
 
         // No excludes
         let tmp_dir = TempDir::new()?;
         let mut writer = SDistWriter::new(&tmp_dir, &metadata, Override::empty(), None)?;
         assert!(writer.file_tracker.0.is_empty());
-        writer.add_bytes_with_permissions("test", Some(Path::new("test")), &[], perm)?;
+        writer.add_data("test", Some(Path::new("test")), empty, true)?;
         assert_eq!(writer.file_tracker.0.len(), 1);
         writer.finish()?;
         tmp_dir.close()?;
@@ -1591,12 +1575,12 @@ mod tests {
         excludes.add("test*")?;
         excludes.add("!test2")?;
         let mut writer = SDistWriter::new(&tmp_dir, &metadata, excludes.build()?, None)?;
-        writer.add_bytes_with_permissions("test1", Some(Path::new("test1")), &[], perm)?;
-        writer.add_bytes_with_permissions("test3", Some(Path::new("test3")), &[], perm)?;
+        writer.add_data("test1", Some(Path::new("test1")), empty, true)?;
+        writer.add_data("test3", Some(Path::new("test3")), empty, true)?;
         assert!(writer.file_tracker.0.is_empty());
-        writer.add_bytes_with_permissions("test2", Some(Path::new("test2")), &[], perm)?;
+        writer.add_data("test2", Some(Path::new("test2")), empty, true)?;
         assert!(!writer.file_tracker.0.is_empty());
-        writer.add_bytes_with_permissions("yes", Some(Path::new("yes")), &[], perm)?;
+        writer.add_data("yes", Some(Path::new("yes")), empty, true)?;
         assert_eq!(writer.file_tracker.0.len(), 2);
         writer.finish()?;
         tmp_dir.close()?;
