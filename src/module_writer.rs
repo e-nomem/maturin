@@ -65,7 +65,7 @@ pub trait ModuleWriter {
 pub trait ModuleWriterExt: ModuleWriter {
     /// Copies the source file the target path relative to the module base path while setting
     /// the given unix permissions
-    fn add_file_with_permissions(
+    fn add_file(
         &mut self,
         target: impl AsRef<Path>,
         source: impl AsRef<Path>,
@@ -911,7 +911,7 @@ pub fn write_bindings_module(
                 .rust_module
                 .strip_prefix(python_module.parent().unwrap())
                 .unwrap();
-            writer.add_file_with_permissions(relative.join(&so_filename), artifact, true)?;
+            writer.add_file(relative.join(&so_filename), artifact, true)?;
         }
     } else {
         let module = PathBuf::from(ext_name);
@@ -932,10 +932,10 @@ if hasattr({ext_name}, "__all__"):
         let type_stub = project_layout.rust_module.join(format!("{ext_name}.pyi"));
         if type_stub.exists() {
             eprintln!("📖 Found type stub file at {ext_name}.pyi");
-            writer.add_file_with_permissions(module.join("__init__.pyi"), type_stub, false)?;
+            writer.add_file(module.join("__init__.pyi"), type_stub, false)?;
             writer.add_empty_file(module.join("py.typed"))?;
         }
-        writer.add_file_with_permissions(module.join(so_filename), artifact, true)?;
+        writer.add_file(module.join(so_filename), artifact, true)?;
     }
 
     Ok(())
@@ -999,7 +999,7 @@ pub fn write_cffi_module(
             .join(format!("{module_name}.pyi"));
         if type_stub.exists() {
             eprintln!("📖 Found type stub file at {module_name}.pyi");
-            writer.add_file_with_permissions(module.join("__init__.pyi"), type_stub, false)?;
+            writer.add_file(module.join("__init__.pyi"), type_stub, false)?;
             writer.add_empty_file(module.join("py.typed"))?;
         }
     };
@@ -1017,7 +1017,7 @@ pub fn write_cffi_module(
             cffi_declarations.as_bytes(),
             false,
         )?;
-        writer.add_file_with_permissions(module.join(&cffi_module_file_name), artifact, true)?;
+        writer.add_file(module.join(&cffi_module_file_name), artifact, true)?;
     }
 
     Ok(())
@@ -1246,7 +1246,7 @@ pub fn write_uniffi_module(
             .join(format!("{module_name}.pyi"));
         if type_stub.exists() {
             eprintln!("📖 Found type stub file at {module_name}.pyi");
-            writer.add_file_with_permissions(module.join("__init__.pyi"), type_stub, false)?;
+            writer.add_file(module.join("__init__.pyi"), type_stub, false)?;
             writer.add_empty_file(module.join("py.typed"))?;
         }
     };
@@ -1254,13 +1254,13 @@ pub fn write_uniffi_module(
     if !editable || project_layout.python_module.is_none() {
         writer.add_data(module.join("__init__.py"), None, py_init.as_bytes(), false)?;
         for binding in binding_names.iter() {
-            writer.add_file_with_permissions(
+            writer.add_file(
                 module.join(binding).with_extension("py"),
                 binding_dir.join(binding).with_extension("py"),
                 false,
             )?;
         }
-        writer.add_file_with_permissions(module.join(cdylib), artifact, true)?;
+        writer.add_file(module.join(cdylib), artifact, true)?;
     }
 
     Ok(())
@@ -1281,7 +1281,7 @@ pub fn write_bin(
     .join("scripts");
 
     // We can't use add_file since we need to mark the file as executable
-    writer.add_file_with_permissions(data_dir.join(bin_name), artifact, true)?;
+    writer.add_file(data_dir.join(bin_name), artifact, true)?;
     Ok(())
 }
 
@@ -1383,7 +1383,7 @@ pub fn write_python_part(
                 #[cfg(not(unix))]
                 let mode = 0o644;
                 writer
-                    .add_file_with_permissions(relative, &absolute, permission_is_executable(mode))
+                    .add_file(relative, &absolute, permission_is_executable(mode))
                     .context(format!("File to add file from {}", absolute.display()))?;
             }
         }
@@ -1409,11 +1409,7 @@ pub fn write_python_part(
                         let mode = source.metadata()?.permissions().mode();
                         #[cfg(not(unix))]
                         let mode = 0o644;
-                        writer.add_file_with_permissions(
-                            target,
-                            source,
-                            permission_is_executable(mode),
-                        )?;
+                        writer.add_file(target, source, permission_is_executable(mode))?;
                     }
                 }
             }
@@ -1468,7 +1464,7 @@ pub fn write_dist_info(
     if !metadata24.license_files.is_empty() {
         let license_files_dir = dist_info_dir.join("licenses");
         for path in &metadata24.license_files {
-            writer.add_file_with_permissions(
+            writer.add_file(
                 license_files_dir.join(path),
                 pyproject_dir.join(path),
                 false,
@@ -1524,17 +1520,13 @@ pub fn add_data(
                         // Copy the actual file contents, not the link, so that you can create a
                         // data directory by joining different data sources
                         let source = fs::read_link(file.path())?;
-                        writer.add_file_with_permissions(
+                        writer.add_file(
                             relative,
                             source.parent().unwrap(),
                             permission_is_executable(mode),
                         )?;
                     } else if file.path().is_file() {
-                        writer.add_file_with_permissions(
-                            relative,
-                            file.path(),
-                            permission_is_executable(mode),
-                        )?;
+                        writer.add_file(relative, file.path(), permission_is_executable(mode))?;
                     } else if file.path().is_dir() {
                         // Intentionally ignored
                     } else {
