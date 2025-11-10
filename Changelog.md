@@ -3,6 +3,7 @@
 ## Unreleased
 
 * Fix tagging for iOS x86_64 simulator wheels.
+* Refactor `ModuleWriter` to be easier to implement and use
 
 ## [1.10.1]
 
