@@ -101,7 +101,7 @@ pub trait ModuleWriterExt: ModuleWriter {
 
     /// Creates an empty file at the specified target
     fn add_empty_file(&mut self, target: impl AsRef<Path>) -> Result<()> {
-        self.add_data(target, None, b"".as_slice(), false)
+        self.add_data(target, None, io::empty(), false)
     }
 }
 
@@ -550,8 +550,8 @@ where
     W: Write,
 {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.hasher.update(buf);
         let written = self.inner.write(buf)?;
+        self.hasher.update(&buf[..written]);
         self.bytes_written += written;
         Ok(written)
     }
