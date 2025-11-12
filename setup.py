@@ -44,7 +44,7 @@ with open("Cargo.toml", "rb") as fp:
 
 # Use `--no-default-features` by default for a minimal build to support PEP 517.
 # `MATURIN_SETUP_ARGS` env var can be used to pass customized arguments to cargo.
-cargo_args = ["--no-default-features"]
+cargo_args = ["--no-default-features", "--features", "experimental-type-stubs"]
 if os.getenv("MATURIN_SETUP_ARGS"):
     cargo_args = shlex.split(os.getenv("MATURIN_SETUP_ARGS", ""))
 
