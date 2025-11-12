@@ -950,9 +950,11 @@ if hasattr({ext_name}, "__all__"):
             writer.add_file(module.join("__init__.pyi"), type_stub)?;
             writer.add_bytes(module.join("py.typed"), None, b"")?;
         } else if cfg!(feature = "experimental-type-stubs") {
+            eprintln!("📖 Auto-generating type stub file:");
             let module_info = introspect_cdylib(artifact, ext_name).with_context(|| format!("Failed to introspect type information for module {ext_name}"))?;
             let type_stubs = module_stub_files(&module_info);
             for (filename, data) in type_stubs {
+                eprintln!("  -> {}", filename.display());
                 writer.add_bytes(module.join(filename), None, data.as_bytes())?;
             }
         }
