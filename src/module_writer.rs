@@ -21,6 +21,8 @@ use ignore::WalkBuilder;
 use indexmap::IndexMap;
 use itertools::Itertools;
 use normpath::PathExt as _;
+#[cfg(feature = "experimental-type-stubs")]
+use pyo3_introspection::{introspect_cdylib, module_stub_files};
 use same_file::is_same_file;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -947,6 +949,12 @@ if hasattr({ext_name}, "__all__"):
             eprintln!("📖 Found type stub file at {ext_name}.pyi");
             writer.add_file(module.join("__init__.pyi"), type_stub)?;
             writer.add_bytes(module.join("py.typed"), None, b"")?;
+        } else if cfg!(feature = "experimental-type-stubs") {
+            let module_info = introspect_cdylib(artifact, ext_name).with_context(|| format!("Failed to introspect type information for module {ext_name}"))?;
+            let type_stubs = module_stub_files(&module_info);
+            for (filename, data) in type_stubs {
+                writer.add_bytes(module.join(filename), None, data.as_bytes())?;
+            }
         }
         writer.add_file_with_permissions(module.join(so_filename), artifact, 0o755)?;
     }

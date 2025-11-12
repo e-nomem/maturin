@@ -85,6 +85,7 @@ normpath = "1.1.1"
 path-slash = "0.2.1"
 pep440_rs = { version = "0.7.3", features = ["tracing"] }
 pep508_rs = { version = "0.9.2", features = ["tracing"] }
+pyo3-introspection = { version = "0.27.1", optional = true }
 same-file = "1.0.6"
 time = "0.3.17"
 url = "2.5.0"
@@ -155,11 +156,13 @@ trycmd = "0.15.0"
 which = "7.0.0"
 
 [features]
-default = ["full", "rustls"]
+default = ["full", "rustls", "experimental-type-stubs"]
 
 full = ["cli-completion", "cross-compile", "scaffolding", "upload"]
 
 cli-completion = ["dep:clap_complete_command"]
+
+experimental-type-stubs = ["dep:pyo3-introspection"]
 
 upload = [
     "ureq",
