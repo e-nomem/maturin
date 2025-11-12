@@ -561,19 +561,12 @@ where
     }
 }
 
-#[cfg(unix)]
 #[inline]
 fn default_permission(executable: bool) -> u32 {
     match executable {
         true => 0o755,
         false => 0o644,
     }
-}
-
-#[cfg(not(unix))]
-#[inline]
-fn default_permission(_executable: bool) -> u32 {
-    0o644
 }
 
 fn expand_compressed_tag(tag: &str) -> impl Iterator<Item = String> + '_ {
