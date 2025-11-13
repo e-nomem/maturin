@@ -52,7 +52,7 @@ pub trait ModuleWriter {
     /// the appropriate unix permissions
     ///
     /// For generated files, `source` is `None`.
-    fn add_data(
+    fn add_bytes(
         &mut self,
         target: impl AsRef<Path>,
         source: Option<&Path>,
@@ -77,7 +77,7 @@ pub trait ModuleWriterExt: ModuleWriter {
 
         let file =
             File::open(source).with_context(|| format!("Failed to open {}", source.display()))?;
-        self.add_data(target, Some(source), file, executable)
+        self.add_bytes(target, Some(source), file, executable)
             .with_context(|| format!("Failed to write to {}", target.display()))?;
         Ok(())
     }
@@ -101,7 +101,7 @@ pub trait ModuleWriterExt: ModuleWriter {
 
     /// Creates an empty file at the specified target
     fn add_empty_file(&mut self, target: impl AsRef<Path>) -> Result<()> {
-        self.add_data(target, None, io::empty(), false)
+        self.add_bytes(target, None, io::empty(), false)
     }
 }
 
@@ -125,7 +125,7 @@ impl PathWriter {
 }
 
 impl ModuleWriter for PathWriter {
-    fn add_data(
+    fn add_bytes(
         &mut self,
         target: impl AsRef<Path>,
         source: Option<&Path>,
@@ -204,7 +204,7 @@ impl CompressionOptions {
 }
 
 impl ModuleWriter for WheelWriter {
-    fn add_data(
+    fn add_bytes(
         &mut self,
         target: impl AsRef<Path>,
         source: Option<&Path>,
@@ -304,7 +304,7 @@ impl WheelWriter {
                 let name = metadata24.get_distribution_escaped();
                 let target = format!("{name}.pth");
                 debug!("Adding {} from {}", target, python_path);
-                self.add_data(target, None, python_path.as_bytes(), false)?;
+                self.add_bytes(target, None, python_path.as_bytes(), false)?;
             } else {
                 eprintln!(
                     "⚠️ source code path contains non-Unicode sequences, editable installs may not work."
@@ -373,7 +373,7 @@ pub struct SDistWriter {
 }
 
 impl ModuleWriter for SDistWriter {
-    fn add_data(
+    fn add_bytes(
         &mut self,
         target: impl AsRef<Path>,
         source: Option<&Path>,
@@ -922,7 +922,7 @@ pub fn write_bindings_module(
     } else {
         let module = PathBuf::from(ext_name);
         // Reexport the shared library as if it were the top level module
-        writer.add_data(
+        writer.add_bytes(
             module.join("__init__.py"),
             None,
             format!(
@@ -1011,13 +1011,13 @@ pub fn write_cffi_module(
     };
 
     if !editable || project_layout.python_module.is_none() {
-        writer.add_data(
+        writer.add_bytes(
             module.join("__init__.py"),
             None,
             cffi_init_file(&cffi_module_file_name).as_bytes(),
             false,
         )?;
-        writer.add_data(
+        writer.add_bytes(
             module.join("ffi.py"),
             None,
             cffi_declarations.as_bytes(),
@@ -1258,7 +1258,7 @@ pub fn write_uniffi_module(
     };
 
     if !editable || project_layout.python_module.is_none() {
-        writer.add_data(module.join("__init__.py"), None, py_init.as_bytes(), false)?;
+        writer.add_bytes(module.join("__init__.py"), None, py_init.as_bytes(), false)?;
         for binding in binding_names.iter() {
             writer.add_file(
                 module.join(binding).with_extension("py"),
@@ -1340,7 +1340,7 @@ if __name__ == '__main__':
     let launcher_path = Path::new(&metadata.get_distribution_escaped())
         .join(bin_name.replace('-', "_"))
         .with_extension("py");
-    writer.add_data(&launcher_path, None, entrypoint_script.as_bytes(), true)?;
+    writer.add_bytes(&launcher_path, None, entrypoint_script.as_bytes(), true)?;
     Ok(())
 }
 
@@ -1427,14 +1427,14 @@ pub fn write_dist_info(
 ) -> Result<()> {
     let dist_info_dir = metadata24.get_dist_info_dir();
 
-    writer.add_data(
+    writer.add_bytes(
         dist_info_dir.join("METADATA"),
         None,
         metadata24.to_file_contents()?.as_bytes(),
         false,
     )?;
 
-    writer.add_data(
+    writer.add_bytes(
         dist_info_dir.join("WHEEL"),
         None,
         wheel_file(tags)?.as_bytes(),
@@ -1452,7 +1452,7 @@ pub fn write_dist_info(
         entry_points.push_str(&entry_points_txt(entry_type, scripts));
     }
     if !entry_points.is_empty() {
-        writer.add_data(
+        writer.add_bytes(
             dist_info_dir.join("entry_points.txt"),
             None,
             entry_points.as_bytes(),
@@ -1549,7 +1549,7 @@ mod tests {
         let tmp_dir = TempDir::new()?;
         let mut writer = SDistWriter::new(&tmp_dir, &metadata, Override::empty(), None)?;
         assert!(writer.file_tracker.0.is_empty());
-        writer.add_data("test", Some(Path::new("test")), empty, true)?;
+        writer.add_bytes("test", Some(Path::new("test")), empty, true)?;
         assert_eq!(writer.file_tracker.0.len(), 1);
         writer.finish()?;
         tmp_dir.close()?;
@@ -1560,12 +1560,12 @@ mod tests {
         excludes.add("test*")?;
         excludes.add("!test2")?;
         let mut writer = SDistWriter::new(&tmp_dir, &metadata, excludes.build()?, None)?;
-        writer.add_data("test1", Some(Path::new("test1")), empty, true)?;
-        writer.add_data("test3", Some(Path::new("test3")), empty, true)?;
+        writer.add_bytes("test1", Some(Path::new("test1")), empty, true)?;
+        writer.add_bytes("test3", Some(Path::new("test3")), empty, true)?;
         assert!(writer.file_tracker.0.is_empty());
-        writer.add_data("test2", Some(Path::new("test2")), empty, true)?;
+        writer.add_bytes("test2", Some(Path::new("test2")), empty, true)?;
         assert!(!writer.file_tracker.0.is_empty());
-        writer.add_data("yes", Some(Path::new("yes")), empty, true)?;
+        writer.add_bytes("yes", Some(Path::new("yes")), empty, true)?;
         assert_eq!(writer.file_tracker.0.len(), 2);
         writer.finish()?;
         tmp_dir.close()?;
