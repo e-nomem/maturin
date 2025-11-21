@@ -41,11 +41,13 @@ impl ModuleWriter for WheelWriter {
         mut data: impl Read,
         executable: bool,
     ) -> Result<()> {
-        let target = target.as_ref();
-        if self.exclude(target) {
-            return Ok(());
+        if let Some(source) = source {
+            if self.exclude(source) {
+                return Ok(());
+            }
         }
 
+        let target = target.as_ref();
         if !self.file_tracker.add_file(target, source)? {
             // Ignore duplicate files.
             return Ok(());

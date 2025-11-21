@@ -51,10 +51,6 @@ impl ModuleWriter for SDistWriter {
         }
 
         let target = target.as_ref();
-        if self.exclude(target) {
-            return Ok(());
-        }
-
         if !self.file_tracker.add_file(target, source)? {
             // Ignore duplicate files.
             return Ok(());
