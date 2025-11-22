@@ -8,14 +8,14 @@ use crate::bridge::Abi3Version;
 use crate::build_options::CargoOptions;
 use crate::compile::{CompileTarget, warn_missing_py_init};
 use crate::compression::CompressionOptions;
-use crate::module_writer::{ModuleWriterExt, WheelWriter, add_data, write_python_part};
+use crate::module_writer::{VirtualWriter, WheelWriter, add_data, add_pth, write_python_part};
 use crate::project_layout::ProjectLayout;
 use crate::source_distribution::source_distribution;
 use crate::target::validate_wheel_filename_for_pypi;
 use crate::target::{Arch, Os};
 use crate::{
-    BridgeModel, BuildArtifact, Metadata24, PyProjectToml, PythonInterpreter, Target, compile,
-    pyproject_toml::Format,
+    BridgeModel, BuildArtifact, Metadata24, ModuleWriter, PyProjectToml, PythonInterpreter, Target,
+    compile, pyproject_toml::Format,
 };
 use anyhow::{Context, Result, anyhow, bail};
 use cargo_metadata::CrateType;
@@ -389,7 +389,7 @@ impl BuildContext {
 
     fn add_external_libs(
         &self,
-        writer: &mut WheelWriter,
+        writer: &mut VirtualWriter<WheelWriter>,
         artifacts: &[&BuildArtifact],
         ext_libs: &[Vec<Library>],
     ) -> Result<()> {
@@ -539,9 +539,9 @@ impl BuildContext {
         Ok(())
     }
 
-    fn add_pth(&self, writer: &mut WheelWriter) -> Result<()> {
+    fn add_pth(&self, writer: &mut VirtualWriter<WheelWriter>) -> Result<()> {
         if self.editable {
-            writer.add_pth(&self.project_layout, &self.metadata24)?;
+            add_pth(writer, &self.project_layout, &self.metadata24)?;
         }
         Ok(())
     }
@@ -758,15 +758,8 @@ impl BuildContext {
             .compression
             .get_file_options()
             .last_modified_time(zip_mtime());
-        let mut writer = WheelWriter::new(
-            &tag,
-            &self.out,
-            &self.project_layout.project_root,
-            &self.metadata24,
-            std::slice::from_ref(&tag),
-            self.excludes(Format::Wheel)?,
-            file_options,
-        )?;
+        let writer = WheelWriter::new(&tag, &self.out, &self.metadata24, file_options)?;
+        let mut writer = VirtualWriter::new(writer, self.excludes(Format::Wheel)?);
         self.add_external_libs(&mut writer, &[&artifact], &[ext_libs])?;
 
         let generator = Pyo3BindingGenerator::new(true);
@@ -785,7 +778,13 @@ impl BuildContext {
             &self.metadata24,
             self.project_layout.data.as_deref(),
         )?;
-        let wheel_path = writer.finish(&self.metadata24)?;
+        let wheel_path = writer
+            .finalize_wheel(
+                &self.project_layout.project_root,
+                &self.metadata24,
+                std::slice::from_ref(&tag),
+            )
+            .context("Failed to commit files to wheel")?;
         Ok((wheel_path, format!("cp{major}{min_minor}")))
     }
 
@@ -839,15 +838,8 @@ impl BuildContext {
             .compression
             .get_file_options()
             .last_modified_time(zip_mtime());
-        let mut writer = WheelWriter::new(
-            &tag,
-            &self.out,
-            &self.project_layout.project_root,
-            &self.metadata24,
-            std::slice::from_ref(&tag),
-            self.excludes(Format::Wheel)?,
-            file_options,
-        )?;
+        let writer = WheelWriter::new(&tag, &self.out, &self.metadata24, file_options)?;
+        let mut writer = VirtualWriter::new(writer, self.excludes(Format::Wheel)?);
         self.add_external_libs(&mut writer, &[&artifact], &[ext_libs])?;
 
         let generator = Pyo3BindingGenerator::new(false);
@@ -866,7 +858,13 @@ impl BuildContext {
             &self.metadata24,
             self.project_layout.data.as_deref(),
         )?;
-        let wheel_path = writer.finish(&self.metadata24)?;
+        let wheel_path = writer
+            .finalize_wheel(
+                &self.project_layout.project_root,
+                &self.metadata24,
+                std::slice::from_ref(&tag),
+            )
+            .context("Failed to commit files to wheel")?;
         Ok((
             wheel_path,
             format!("cp{}{}", python_interpreter.major, python_interpreter.minor),
@@ -965,15 +963,8 @@ impl BuildContext {
             .compression
             .get_file_options()
             .last_modified_time(zip_mtime());
-        let mut writer = WheelWriter::new(
-            &tag,
-            &self.out,
-            &self.project_layout.project_root,
-            &self.metadata24,
-            &tags,
-            self.excludes(Format::Wheel)?,
-            file_options,
-        )?;
+        let writer = WheelWriter::new(&tag, &self.out, &self.metadata24, file_options)?;
+        let mut writer = VirtualWriter::new(writer, self.excludes(Format::Wheel)?);
         self.add_external_libs(&mut writer, &[&artifact], &[ext_libs])?;
 
         let generator = CffiBindingGenerator::default();
@@ -991,7 +982,9 @@ impl BuildContext {
             &self.metadata24,
             self.project_layout.data.as_deref(),
         )?;
-        let wheel_path = writer.finish(&self.metadata24)?;
+        let wheel_path = writer
+            .finalize_wheel(&self.project_layout.project_root, &self.metadata24, &tags)
+            .context("Failed to commit files to wheel")?;
         Ok((wheel_path, "py3".to_string()))
     }
 
@@ -1038,15 +1031,8 @@ impl BuildContext {
             .compression
             .get_file_options()
             .last_modified_time(zip_mtime());
-        let mut writer = WheelWriter::new(
-            &tag,
-            &self.out,
-            &self.project_layout.project_root,
-            &self.metadata24,
-            &tags,
-            self.excludes(Format::Wheel)?,
-            file_options,
-        )?;
+        let writer = WheelWriter::new(&tag, &self.out, &self.metadata24, file_options)?;
+        let mut writer = VirtualWriter::new(writer, self.excludes(Format::Wheel)?);
         self.add_external_libs(&mut writer, &[&artifact], &[ext_libs])?;
 
         write_uniffi_module(
@@ -1067,7 +1053,9 @@ impl BuildContext {
             &self.metadata24,
             self.project_layout.data.as_deref(),
         )?;
-        let wheel_path = writer.finish(&self.metadata24)?;
+        let wheel_path = writer
+            .finalize_wheel(&self.project_layout.project_root, &self.metadata24, &tags)
+            .context("Failed to commit files to wheel")?;
         Ok((wheel_path, "py3".to_string()))
     }
 
@@ -1142,15 +1130,8 @@ impl BuildContext {
             .compression
             .get_file_options()
             .last_modified_time(zip_mtime());
-        let mut writer = WheelWriter::new(
-            &tag,
-            &self.out,
-            &self.project_layout.project_root,
-            &metadata24,
-            &tags,
-            self.excludes(Format::Wheel)?,
-            file_options,
-        )?;
+        let writer = WheelWriter::new(&tag, &self.out, &metadata24, file_options)?;
+        let mut writer = VirtualWriter::new(writer, self.excludes(Format::Wheel)?);
 
         if self.project_layout.python_module.is_some() && self.target.is_wasi() {
             // TODO: Can we have python code and the wasm launchers coexisting
@@ -1182,7 +1163,9 @@ impl BuildContext {
             &self.metadata24,
             self.project_layout.data.as_deref(),
         )?;
-        let wheel_path = writer.finish(&self.metadata24)?;
+        let wheel_path = writer
+            .finalize_wheel(&self.project_layout.project_root, &self.metadata24, &tags)
+            .context("Failed to commit files to wheel")?;
         Ok((wheel_path, "py3".to_string()))
     }
 

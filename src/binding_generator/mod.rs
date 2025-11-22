@@ -16,7 +16,8 @@ use crate::BuildContext;
 use crate::Metadata24;
 use crate::ModuleWriter;
 use crate::PythonInterpreter;
-use crate::module_writer::ModuleWriterExt;
+use crate::VirtualWriter;
+use crate::module_writer::ModuleWriterInternal;
 use crate::module_writer::write_python_part;
 
 mod cffi_binding;
@@ -79,7 +80,7 @@ pub(crate) struct GeneratorOutput {
 ///
 /// Note: Writing the pth to the archive is handled by [BuildContext], not here
 pub fn generate_binding(
-    writer: &mut impl ModuleWriter,
+    writer: &mut VirtualWriter<impl ModuleWriterInternal>,
     generator: &impl BindingGenerator,
     context: &BuildContext,
     interpreter: Option<&PythonInterpreter>,
@@ -166,7 +167,7 @@ pub fn generate_binding(
             if let Some(additional_files) = additional_files {
                 for (target, data) in additional_files {
                     debug!("Generating archive entry {}", target.display());
-                    writer.add_bytes(target, None, data.as_slice(), false)?;
+                    writer.add_bytes(target, None, data, false)?;
                 }
             }
         }
@@ -191,7 +192,7 @@ pub fn generate_binding(
 
 /// Adds a data directory with a scripts directory with the binary inside it
 pub fn write_bin(
-    writer: &mut impl ModuleWriter,
+    writer: &mut VirtualWriter<impl ModuleWriterInternal>,
     artifact: &Path,
     metadata: &Metadata24,
     bin_name: &str,

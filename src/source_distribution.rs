@@ -1,6 +1,5 @@
-use crate::module_writer::{ModuleWriter, ModuleWriterExt};
-use crate::pyproject_toml::SdistGenerator;
-use crate::{BuildContext, PyProjectToml, SDistWriter, pyproject_toml::Format};
+use crate::pyproject_toml::{Format, SdistGenerator};
+use crate::{BuildContext, ModuleWriter, PyProjectToml, SDistWriter, VirtualWriter};
 use anyhow::{Context, Result, bail};
 use cargo_metadata::camino::Utf8Path;
 use cargo_metadata::{Metadata, MetadataCommand, PackageId};
@@ -179,7 +178,7 @@ fn rewrite_pyproject_toml(
 ///
 /// Runs `cargo package --list --allow-dirty` to obtain a list of files to package.
 fn add_crate_to_source_distribution(
-    writer: &mut SDistWriter,
+    writer: &mut VirtualWriter<SDistWriter>,
     manifest_path: impl AsRef<Path>,
     prefix: impl AsRef<Path>,
     readme: Option<&Path>,
@@ -287,7 +286,7 @@ fn add_crate_to_source_distribution(
         writer.add_bytes(
             cargo_toml_path,
             Some(manifest_path),
-            document.to_string().as_bytes(),
+            document.to_string().into(),
             false,
         )?;
     } else if !skip_cargo_toml {
@@ -296,7 +295,7 @@ fn add_crate_to_source_distribution(
         writer.add_bytes(
             cargo_toml_path,
             Some(manifest_path),
-            document.to_string().as_bytes(),
+            document.to_string().into(),
             false,
         )?;
     }
@@ -406,7 +405,7 @@ pub fn find_path_deps(cargo_metadata: &Metadata) -> Result<HashMap<String, PathD
 /// Runs `git ls-files -z` to obtain a list of files to package.
 fn add_git_tracked_files_to_sdist(
     pyproject_toml_path: &Path,
-    writer: &mut SDistWriter,
+    writer: &mut VirtualWriter<SDistWriter>,
     prefix: impl AsRef<Path>,
 ) -> Result<()> {
     let pyproject_dir = pyproject_toml_path.parent().unwrap();
@@ -442,7 +441,7 @@ fn add_git_tracked_files_to_sdist(
 fn add_cargo_package_files_to_sdist(
     build_context: &BuildContext,
     pyproject_toml_path: &Path,
-    writer: &mut SDistWriter,
+    writer: &mut VirtualWriter<SDistWriter>,
     root_dir: &Path,
 ) -> Result<()> {
     let manifest_path = &build_context.manifest_path;
@@ -587,7 +586,7 @@ fn add_cargo_package_files_to_sdist(
             writer.add_bytes(
                 root_dir.join(relative_workspace_cargo_toml),
                 Some(workspace_manifest_path.as_std_path()),
-                document.to_string().as_bytes(),
+                document.to_string().into(),
                 false,
             )?;
         }
@@ -611,7 +610,7 @@ fn add_cargo_package_files_to_sdist(
         writer.add_bytes(
             root_dir.join("pyproject.toml"),
             Some(pyproject_toml_path),
-            rewritten_pyproject_toml.as_bytes(),
+            rewritten_pyproject_toml.into(),
             false,
         )?;
     } else {
@@ -660,7 +659,7 @@ fn add_cargo_package_files_to_sdist(
 
 #[allow(clippy::too_many_arguments)] // TODO(konsti)
 fn add_path_dep(
-    writer: &mut SDistWriter,
+    writer: &mut VirtualWriter<SDistWriter>,
     root_dir: &Path,
     workspace_root: &Utf8Path,
     workspace_manifest_path: &Utf8Path,
@@ -765,7 +764,8 @@ pub fn source_distribution(
             });
 
     let metadata24 = &build_context.metadata24;
-    let mut writer = SDistWriter::new(&build_context.out, metadata24, excludes, source_date_epoch)?;
+    let writer = SDistWriter::new(&build_context.out, metadata24, source_date_epoch)?;
+    let mut writer = VirtualWriter::new(writer, excludes);
     let root_dir = PathBuf::from(format!(
         "{}-{}",
         &metadata24.get_distribution_escaped(),
@@ -860,11 +860,13 @@ pub fn source_distribution(
     writer.add_bytes(
         root_dir.join("PKG-INFO"),
         None,
-        metadata24.to_file_contents()?.as_bytes(),
+        metadata24.to_file_contents()?.into(),
         false,
     )?;
 
-    let source_distribution_path = writer.finish()?;
+    let source_distribution_path = writer
+        .finalize_sdist()
+        .context("Failed to commit files to sdist")?;
 
     eprintln!(
         "📦 Built source distribution to {}",

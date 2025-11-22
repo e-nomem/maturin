@@ -13,6 +13,7 @@ use fs_err::File;
 use ignore::WalkBuilder;
 use indexmap::IndexMap;
 use itertools::Itertools as _;
+use normpath::PathExt as _;
 use tracing::debug;
 
 use crate::Metadata24;
@@ -23,14 +24,16 @@ use crate::pyproject_toml::Format;
 mod path_writer;
 mod sdist_writer;
 mod util;
+mod virtual_writer;
 mod wheel_writer;
 
 pub use path_writer::PathWriter;
 pub use sdist_writer::SDistWriter;
+pub use virtual_writer::VirtualWriter;
 pub use wheel_writer::WheelWriter;
 
 /// Allows writing the module to a wheel or add it directly to the virtualenv
-pub trait ModuleWriter {
+pub trait ModuleWriterInternal {
     /// Adds a file with data as content in target relative to the module base path while setting
     /// the appropriate unix permissions
     ///
@@ -45,9 +48,44 @@ pub trait ModuleWriter {
 }
 
 /// Extension trait with convenience methods for interacting with a [ModuleWriter]
-pub trait ModuleWriterExt: ModuleWriter {
+pub trait ModuleWriter {
+    /// Adds a file with data as content in target relative to the module base path while setting
+    /// the appropriate unix permissions
+    ///
+    /// For generated files, `source` is `None`.
+    fn add_bytes(
+        &mut self,
+        target: impl AsRef<Path>,
+        source: Option<&Path>,
+        data: Vec<u8>,
+        executable: bool,
+    ) -> Result<()>;
+
     /// Copies the source file the target path relative to the module base path while setting
     /// the given unix permissions
+    fn add_file(
+        &mut self,
+        target: impl AsRef<Path>,
+        source: impl AsRef<Path>,
+        executable: bool,
+    ) -> Result<()>;
+
+    /// Add an empty file to the target path
+    fn add_empty_file(&mut self, target: impl AsRef<Path>) -> Result<()>;
+}
+
+/// This blanket impl makes it impossible to overwrite the methods in [ModuleWriter]
+impl<T: ModuleWriterInternal> ModuleWriter for T {
+    fn add_bytes(
+        &mut self,
+        target: impl AsRef<Path>,
+        source: Option<&Path>,
+        data: Vec<u8>,
+        executable: bool,
+    ) -> Result<()> {
+        <Self as ModuleWriterInternal>::add_bytes(self, target, source, data.as_slice(), executable)
+    }
+
     fn add_file(
         &mut self,
         target: impl AsRef<Path>,
@@ -60,23 +98,19 @@ pub trait ModuleWriterExt: ModuleWriter {
 
         let file =
             File::open(source).with_context(|| format!("Failed to open {}", source.display()))?;
-        self.add_bytes(target, Some(source), file, executable)
+        <Self as ModuleWriterInternal>::add_bytes(self, target, Some(source), file, executable)
             .with_context(|| format!("Failed to write to {}", target.display()))?;
         Ok(())
     }
 
-    /// Add an empty file to the target path
     fn add_empty_file(&mut self, target: impl AsRef<Path>) -> Result<()> {
-        self.add_bytes(target, None, io::empty(), false)
+        <Self as ModuleWriterInternal>::add_bytes(self, target, None, io::empty(), false)
     }
 }
 
-/// This blanket impl makes it impossible to overwrite the methods in [ModuleWriterExt]
-impl<T: ModuleWriter> ModuleWriterExt for T {}
-
 /// Adds the python part of a mixed project to the writer,
 pub fn write_python_part(
-    writer: &mut impl ModuleWriter,
+    writer: &mut VirtualWriter<impl ModuleWriterInternal>,
     project_layout: &ProjectLayout,
     pyproject_toml: Option<&PyProjectToml>,
 ) -> Result<()> {
@@ -162,7 +196,7 @@ pub fn write_python_part(
 ///
 /// See https://peps.python.org/pep-0427/#file-contents
 pub fn add_data(
-    writer: &mut impl ModuleWriter,
+    writer: &mut VirtualWriter<impl ModuleWriterInternal>,
     metadata24: &Metadata24,
     data: Option<&Path>,
 ) -> Result<()> {
@@ -224,7 +258,7 @@ pub fn add_data(
 
 /// Creates the .dist-info directory and fills it with all metadata files except RECORD
 pub fn write_dist_info(
-    writer: &mut impl ModuleWriter,
+    writer: &mut VirtualWriter<impl ModuleWriterInternal>,
     pyproject_dir: &Path,
     metadata24: &Metadata24,
     tags: &[String],
@@ -234,14 +268,14 @@ pub fn write_dist_info(
     writer.add_bytes(
         dist_info_dir.join("METADATA"),
         None,
-        metadata24.to_file_contents()?.as_bytes(),
+        metadata24.to_file_contents()?.into(),
         false,
     )?;
 
     writer.add_bytes(
         dist_info_dir.join("WHEEL"),
         None,
-        wheel_file(tags)?.as_bytes(),
+        wheel_file(tags)?.into(),
         false,
     )?;
 
@@ -259,7 +293,7 @@ pub fn write_dist_info(
         writer.add_bytes(
             dist_info_dir.join("entry_points.txt"),
             None,
-            entry_points.as_bytes(),
+            entry_points.into(),
             false,
         )?;
     }
@@ -275,6 +309,37 @@ pub fn write_dist_info(
         }
     }
 
+    Ok(())
+}
+
+/// Add a pth file to wheel root for editable installs
+pub fn add_pth(
+    writer: &mut VirtualWriter<impl ModuleWriterInternal>,
+    project_layout: &ProjectLayout,
+    metadata24: &Metadata24,
+) -> Result<()> {
+    if project_layout.python_module.is_some() || !project_layout.python_packages.is_empty() {
+        let absolute_path = project_layout
+            .python_dir
+            .normalize()
+            .with_context(|| {
+                format!(
+                    "python dir path `{}` does not exist or is invalid",
+                    project_layout.python_dir.display()
+                )
+            })?
+            .into_path_buf();
+        if let Some(python_path) = absolute_path.to_str() {
+            let name = metadata24.get_distribution_escaped();
+            let target = format!("{name}.pth");
+            debug!("Adding {} from {}", target, python_path);
+            writer.add_bytes(target, None, python_path.into(), false)?;
+        } else {
+            eprintln!(
+                "⚠️ source code path contains non-Unicode sequences, editable installs may not work."
+            );
+        }
+    }
     Ok(())
 }
 
@@ -341,10 +406,103 @@ fn default_permission(executable: bool) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::path::Path;
+    use std::path::PathBuf;
+
+    use anyhow::Result;
+    use ignore::overrides::Override;
+    use insta::assert_snapshot;
+
+    use crate::BuildOptions;
+    use crate::CargoOptions;
+
+    use super::ModuleWriterInternal;
+    use super::VirtualWriter;
     use super::wheel_file;
+    use super::write_dist_info;
+
+    #[derive(Default)]
+    pub(super) struct MockWriter {
+        pub(super) files: Vec<String>,
+        pub(super) contents: HashMap<String, String>,
+    }
+
+    impl ModuleWriterInternal for MockWriter {
+        fn add_bytes(
+            &mut self,
+            target: impl AsRef<Path>,
+            _source: Option<&Path>,
+            mut data: impl std::io::Read,
+            _executable: bool,
+        ) -> Result<()> {
+            let target = target.as_ref().to_string_lossy().to_string();
+            let mut buffer = String::new();
+            data.read_to_string(&mut buffer)?;
+
+            self.files.push(target.clone());
+            self.contents.insert(target, buffer);
+
+            Ok(())
+        }
+    }
 
     #[test]
-    fn wheel_file_compressed_tags() -> Result<(), Box<dyn std::error::Error>> {
+    fn metadata_hello_world_pep639() -> Result<()> {
+        let build_options = BuildOptions {
+            cargo: CargoOptions {
+                manifest_path: Some(
+                    PathBuf::from("test-crates")
+                        .join("hello-world")
+                        .join("Cargo.toml"),
+                ),
+                ..CargoOptions::default()
+            },
+            ..BuildOptions::default()
+        };
+        let context = build_options.into_build_context().build()?;
+
+        let mut writer = VirtualWriter::new(MockWriter::default(), Override::empty());
+        write_dist_info(
+            &mut writer,
+            &context.project_layout.project_root,
+            &context.metadata24,
+            &context.tags_from_bridge().unwrap(),
+        )?;
+        let writer = writer.finalize_mock()?;
+
+        assert_snapshot!(writer.files.join("\n").replace("\\", "/"), @r"
+        hello_world-0.1.0.dist-info/METADATA
+        hello_world-0.1.0.dist-info/WHEEL
+        hello_world-0.1.0.dist-info/licenses/LICENSE
+        hello_world-0.1.0.dist-info/licenses/licenses/AUTHORS.txt
+        ");
+        let metadata_path = Path::new("hello_world-0.1.0.dist-info")
+            .join("METADATA")
+            .to_str()
+            .unwrap()
+            .to_string();
+        // Remove the README in the body of the email
+        let metadata = writer.contents[&metadata_path]
+            .split_once("\n\n")
+            .unwrap()
+            .0;
+        assert_snapshot!(metadata, @r"
+        Metadata-Version: 2.4
+        Name: hello-world
+        Version: 0.1.0
+        License-File: LICENSE
+        License-File: licenses/AUTHORS.txt
+        Author: konstin <konstin@mailbox.org>
+        Author-email: konstin <konstin@mailbox.org>
+        Description-Content-Type: text/markdown; charset=UTF-8; variant=GFM
+        ");
+
+        Ok(())
+    }
+
+    #[test]
+    fn wheel_file_compressed_tags() -> Result<()> {
         let expected = format!(
             "Wheel-Version: 1.0
 Generator: {name} ({version})

@@ -8,47 +8,32 @@ use std::path::PathBuf;
 use anyhow::Context as _;
 use anyhow::Result;
 use fs_err::File;
-use ignore::overrides::Override;
-use normpath::PathExt as _;
 use tracing::debug;
 use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
 
 use crate::Metadata24;
-use crate::project_layout::ProjectLayout;
 
-use super::ModuleWriter;
+use super::ModuleWriterInternal;
 use super::default_permission;
-use super::util::FileTracker;
 use super::util::StreamSha256;
-use super::write_dist_info;
 
 /// A glorified zip builder, mostly useful for writing the record file of a wheel
 pub struct WheelWriter {
     zip: ZipWriter<File>,
     record: BTreeMap<PathBuf, (String, usize)>,
-    file_tracker: FileTracker,
-    excludes: Override,
     file_options: SimpleFileOptions,
 }
 
-impl ModuleWriter for WheelWriter {
+impl ModuleWriterInternal for WheelWriter {
     fn add_bytes(
         &mut self,
         target: impl AsRef<Path>,
-        source: Option<&Path>,
+        _source: Option<&Path>,
         mut data: impl Read,
         executable: bool,
     ) -> Result<()> {
         let target = target.as_ref();
-        if self.exclude(target) {
-            return Ok(());
-        }
-
-        if !self.file_tracker.add_file(target, source)? {
-            // Ignore duplicate files.
-            return Ok(());
-        }
 
         let options = self
             .file_options
@@ -73,12 +58,9 @@ impl WheelWriter {
     pub fn new(
         tag: &str,
         wheel_dir: &Path,
-        pyproject_dir: &Path,
         metadata24: &Metadata24,
-        tags: &[String],
-        excludes: Override,
         file_options: SimpleFileOptions,
-    ) -> Result<WheelWriter> {
+    ) -> Result<WheelWriter, io::Error> {
         let wheel_path = wheel_dir.join(format!(
             "{}-{}-{}.whl",
             metadata24.get_distribution_escaped(),
@@ -88,53 +70,12 @@ impl WheelWriter {
 
         let file = File::create(wheel_path)?;
 
-        let mut builder = WheelWriter {
+        let builder = WheelWriter {
             zip: ZipWriter::new(file),
             record: BTreeMap::new(),
-            file_tracker: FileTracker::default(),
-            excludes,
             file_options,
         };
-
-        write_dist_info(&mut builder, pyproject_dir, metadata24, tags)?;
-
         Ok(builder)
-    }
-
-    /// Add a pth file to wheel root for editable installs
-    pub fn add_pth(
-        &mut self,
-        project_layout: &ProjectLayout,
-        metadata24: &Metadata24,
-    ) -> Result<()> {
-        if project_layout.python_module.is_some() || !project_layout.python_packages.is_empty() {
-            let absolute_path = project_layout
-                .python_dir
-                .normalize()
-                .with_context(|| {
-                    format!(
-                        "python dir path `{}` does not exist or is invalid",
-                        project_layout.python_dir.display()
-                    )
-                })?
-                .into_path_buf();
-            if let Some(python_path) = absolute_path.to_str() {
-                let name = metadata24.get_distribution_escaped();
-                let target = format!("{name}.pth");
-                debug!("Adding {} from {}", target, python_path);
-                self.add_bytes(target, None, python_path.as_bytes(), false)?;
-            } else {
-                eprintln!(
-                    "⚠️ source code path contains non-Unicode sequences, editable installs may not work."
-                );
-            }
-        }
-        Ok(())
-    }
-
-    /// Returns `true` if the given path should be excluded
-    fn exclude(&self, path: impl AsRef<Path>) -> bool {
-        self.excludes.matched(path.as_ref(), false).is_whitelist()
     }
 
     /// Creates the record file and finishes the zip
@@ -160,7 +101,6 @@ impl WheelWriter {
 
 #[cfg(test)]
 mod tests {
-    use ignore::overrides::Override;
     use pep440_rs::Version;
     use tempfile::TempDir;
 
@@ -182,10 +122,7 @@ mod tests {
         let writer = WheelWriter::new(
             "no compression",
             tmp_dir.path(),
-            tmp_dir.path(),
             &metadata,
-            &[],
-            Override::empty(),
             compression_options.get_file_options(),
         )?;
 

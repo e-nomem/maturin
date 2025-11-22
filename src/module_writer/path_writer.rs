@@ -13,15 +13,13 @@ use fs_err::OpenOptions;
 #[cfg(unix)]
 use fs_err::os::unix::fs::OpenOptionsExt as _;
 
-use super::ModuleWriter;
+use super::ModuleWriterInternal;
 #[cfg(target_family = "unix")]
 use super::default_permission;
-use super::util::FileTracker;
 
 /// A [ModuleWriter] that adds the module somewhere in the filesystem, e.g. in a virtualenv
 pub struct PathWriter {
     base_path: PathBuf,
-    file_tracker: FileTracker,
 }
 
 impl PathWriter {
@@ -29,26 +27,19 @@ impl PathWriter {
     pub fn from_path(path: impl AsRef<Path>) -> Self {
         Self {
             base_path: path.as_ref().to_path_buf(),
-            file_tracker: FileTracker::default(),
         }
     }
 }
 
-impl ModuleWriter for PathWriter {
+impl ModuleWriterInternal for PathWriter {
     fn add_bytes(
         &mut self,
         target: impl AsRef<Path>,
-        source: Option<&Path>,
+        _source: Option<&Path>,
         mut data: impl Read,
         #[cfg_attr(target_os = "windows", allow(unused_variables))] executable: bool,
     ) -> Result<()> {
         let path = self.base_path.join(&target);
-
-        if !self.file_tracker.add_file(target.as_ref(), source)? {
-            // Ignore duplicate files.
-            return Ok(());
-        }
-
         if let Some(parent_dir) = path.parent() {
             fs::create_dir_all(parent_dir)
                 .with_context(|| format!("Failed to create directory {}", parent_dir.display()))?;

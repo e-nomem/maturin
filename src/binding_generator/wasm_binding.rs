@@ -3,13 +3,15 @@ use std::path::Path;
 use anyhow::Result;
 
 use crate::Metadata24;
-use crate::ModuleWriter;
+use crate::ModuleWriter as _;
+use crate::VirtualWriter;
+use crate::module_writer::ModuleWriterInternal;
 
 /// Adds a wrapper script that start the wasm binary through wasmtime.
 ///
 /// Note that the wasm binary needs to be written separately by [write_bin]
 pub fn write_wasm_launcher(
-    writer: &mut impl ModuleWriter,
+    writer: &mut VirtualWriter<impl ModuleWriterInternal>,
     metadata: &Metadata24,
     bin_name: &str,
 ) -> Result<()> {
@@ -54,6 +56,6 @@ if __name__ == '__main__':
     let launcher_path = Path::new(&metadata.get_distribution_escaped())
         .join(bin_name.replace('-', "_"))
         .with_extension("py");
-    writer.add_bytes(&launcher_path, None, entrypoint_script.as_bytes(), true)?;
+    writer.add_bytes(&launcher_path, None, entrypoint_script.into(), true)?;
     Ok(())
 }

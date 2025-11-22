@@ -14,7 +14,8 @@ use tracing::debug;
 
 use crate::ModuleWriter;
 use crate::PyProjectToml;
-use crate::module_writer::ModuleWriterExt;
+use crate::VirtualWriter;
+use crate::module_writer::ModuleWriterInternal;
 use crate::module_writer::write_python_part;
 use crate::project_layout::ProjectLayout;
 use crate::target::Os;
@@ -180,7 +181,7 @@ fn generate_uniffi_bindings(
 /// Creates the uniffi module with the shared library
 #[allow(clippy::too_many_arguments)]
 pub fn write_uniffi_module(
-    writer: &mut impl ModuleWriter,
+    writer: &mut VirtualWriter<impl ModuleWriterInternal>,
     project_layout: &ProjectLayout,
     crate_dir: &Path,
     target_dir: &Path,
@@ -248,7 +249,7 @@ pub fn write_uniffi_module(
     };
 
     if !editable || project_layout.python_module.is_none() {
-        writer.add_bytes(module.join("__init__.py"), None, py_init.as_bytes(), false)?;
+        writer.add_bytes(module.join("__init__.py"), None, py_init.into(), false)?;
         for binding in binding_names.iter() {
             writer.add_file(
                 module.join(binding).with_extension("py"),
