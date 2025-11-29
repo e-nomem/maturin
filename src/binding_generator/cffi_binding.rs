@@ -31,7 +31,7 @@ pub struct CffiBindingGenerator {}
 
 impl BindingGenerator for CffiBindingGenerator {
     fn generate_bindings(
-        &self,
+        &mut self,
         context: &BuildContext,
         interpreter: Option<&PythonInterpreter>,
         _artifact: &BuildArtifact,

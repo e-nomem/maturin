@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::Path;
@@ -13,21 +14,20 @@ use tracing::debug;
 
 use crate::BuildArtifact;
 use crate::BuildContext;
-use crate::Metadata24;
 use crate::ModuleWriter;
 use crate::PythonInterpreter;
 use crate::module_writer::ModuleWriterExt;
 use crate::module_writer::write_python_part;
 
+mod bin_binding;
 mod cffi_binding;
 mod pyo3_binding;
 mod uniffi_binding;
-mod wasm_binding;
 
+pub use bin_binding::BinBindingGenerator;
 pub use cffi_binding::CffiBindingGenerator;
 pub use pyo3_binding::Pyo3BindingGenerator;
 pub use uniffi_binding::write_uniffi_module;
-pub use wasm_binding::write_wasm_launcher;
 
 ///A trait to generate the binding files to be included in the built module
 ///
@@ -35,7 +35,7 @@ pub use wasm_binding::write_wasm_launcher;
 /// module for any [crate::BridgeModel]
 pub(crate) trait BindingGenerator {
     fn generate_bindings(
-        &self,
+        &mut self,
         context: &BuildContext,
         interpreter: Option<&PythonInterpreter>,
         artifact: &BuildArtifact,
@@ -78,20 +78,24 @@ pub(crate) struct GeneratorOutput {
 /// 2. everything else => install to archive/build as normal
 ///
 /// Note: Writing the pth to the archive is handled by [BuildContext], not here
-pub fn generate_binding(
+pub fn generate_binding<A>(
     writer: &mut impl ModuleWriter,
-    generator: &impl BindingGenerator,
+    generator: &mut impl BindingGenerator,
     context: &BuildContext,
     interpreter: Option<&PythonInterpreter>,
-    artifact: &BuildArtifact,
-) -> Result<()> {
+    artifacts: &[A],
+) -> Result<()>
+where
+    A: Borrow<BuildArtifact>,
+{
     // 1. Install the python files
     if !context.editable {
         write_python_part(
             writer,
             &context.project_layout,
             context.pyproject_toml.as_ref(),
-        )?;
+        )
+        .context("Failed to add the python module to the package")?;
     }
 
     let base_path = context
@@ -110,63 +114,66 @@ pub fn generate_binding(
         None => PathBuf::from(&context.project_layout.extension_name),
     };
 
-    let temp_dir = tempdir()?;
-    let GeneratorOutput {
-        artifact_target,
-        artifact_source_override,
-        additional_files,
-    } = generator.generate_bindings(context, interpreter, artifact, &module, &temp_dir)?;
+    for artifact in artifacts {
+        let artifact = artifact.borrow();
+        let temp_dir = tempdir()?;
+        let GeneratorOutput {
+            artifact_target,
+            artifact_source_override,
+            additional_files,
+        } = generator.generate_bindings(context, interpreter, artifact, &module, &temp_dir)?;
 
-    match (context.editable, &base_path) {
-        (true, Some(base_path)) => {
-            let target = base_path.join(&artifact_target);
-            debug!("Removing previously built module {}", target.display());
-            fs::create_dir_all(target.parent().unwrap())?;
-            // Remove existing so file to avoid triggering SIGSEV in running process
-            // See https://github.com/PyO3/maturin/issues/758
-            let _ = fs::remove_file(&target);
-            let source = artifact_source_override.unwrap_or_else(|| artifact.path.clone());
+        match (context.editable, &base_path) {
+            (true, Some(base_path)) => {
+                let target = base_path.join(&artifact_target);
+                debug!("Removing previously built module {}", target.display());
+                fs::create_dir_all(target.parent().unwrap())?;
+                // Remove existing so file to avoid triggering SIGSEV in running process
+                // See https://github.com/PyO3/maturin/issues/758
+                let _ = fs::remove_file(&target);
+                let source = artifact_source_override.unwrap_or_else(|| artifact.path.clone());
 
-            // 2. Install the artifact
-            debug!("Installing {} from {}", target.display(), source.display());
-            fs::copy(&source, &target).with_context(|| {
-                format!(
-                    "Failed to copy {} to {}",
-                    source.display(),
-                    target.display(),
-                )
-            })?;
+                // 2a. Install the artifact
+                debug!("Installing {} from {}", target.display(), source.display());
+                fs::copy(&source, &target).with_context(|| {
+                    format!(
+                        "Failed to copy {} to {}",
+                        source.display(),
+                        target.display(),
+                    )
+                })?;
 
-            // 3. Install additional files
-            if let Some(additional_files) = additional_files {
-                for (target, data) in additional_files {
-                    let target = base_path.join(target);
-                    fs::create_dir_all(target.parent().unwrap())?;
-                    debug!("Generating file {}", target.display());
-                    let mut file = File::options()
-                        .write(true)
-                        .create(true)
-                        .truncate(true)
-                        .open(&target)?;
-                    file.write_all(data.as_slice())?;
+                // 3a. Install additional files
+                if let Some(additional_files) = additional_files {
+                    for (target, data) in additional_files {
+                        let target = base_path.join(target);
+                        fs::create_dir_all(target.parent().unwrap())?;
+                        debug!("Generating file {}", target.display());
+                        let mut file = File::options()
+                            .write(true)
+                            .create(true)
+                            .truncate(true)
+                            .open(&target)?;
+                        file.write_all(data.as_slice())?;
+                    }
                 }
             }
-        }
-        _ => {
-            // 2. Install the artifact
-            let source = artifact_source_override.unwrap_or_else(|| artifact.path.clone());
-            debug!(
-                "Adding to archive {} from {}",
-                artifact_target.display(),
-                source.display()
-            );
-            writer.add_file(artifact_target, source, true)?;
+            _ => {
+                // 2b. Install the artifact
+                let source = artifact_source_override.unwrap_or_else(|| artifact.path.clone());
+                debug!(
+                    "Adding to archive {} from {}",
+                    artifact_target.display(),
+                    source.display()
+                );
+                writer.add_file(artifact_target, source, true)?;
 
-            // 3. Install additional files
-            if let Some(additional_files) = additional_files {
-                for (target, data) in additional_files {
-                    debug!("Generating archive entry {}", target.display());
-                    writer.add_bytes(target, None, data.as_slice(), false)?;
+                // 3b. Install additional files
+                if let Some(additional_files) = additional_files {
+                    for (target, data) in additional_files {
+                        debug!("Generating archive entry {}", target.display());
+                        writer.add_bytes(target, None, data.as_slice(), false)?;
+                    }
                 }
             }
         }
@@ -186,24 +193,5 @@ pub fn generate_binding(
         }
     }
 
-    Ok(())
-}
-
-/// Adds a data directory with a scripts directory with the binary inside it
-pub fn write_bin(
-    writer: &mut impl ModuleWriter,
-    artifact: &Path,
-    metadata: &Metadata24,
-    bin_name: &str,
-) -> Result<()> {
-    let data_dir = PathBuf::from(format!(
-        "{}-{}.data",
-        &metadata.get_distribution_escaped(),
-        &metadata.version
-    ))
-    .join("scripts");
-
-    // We can't use add_file since we need to mark the file as executable
-    writer.add_file(data_dir.join(bin_name), artifact, true)?;
     Ok(())
 }
