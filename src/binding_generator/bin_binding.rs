@@ -15,6 +15,7 @@ use crate::PythonInterpreter;
 use super::BindingGenerator;
 use super::GeneratorOutput;
 
+/// A generator for producing bin (and wasm) bindings.
 pub struct BinBindingGenerator<'m> {
     metadata: &'m mut Metadata24,
 }
@@ -68,7 +69,7 @@ impl<'m> BindingGenerator for BinBindingGenerator<'m> {
     }
 }
 
-/// Adds a wrapper script that start the wasm binary through wasmtime.
+/// Adds a wrapper script that starts the wasm binary through wasmtime.
 pub fn generate_wasm_launcher(bin_name: &str) -> String {
     format!(
         r#"from pathlib import Path
